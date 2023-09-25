@@ -1480,7 +1480,9 @@ public:
 
     // Now add typerefs of all of the captures.
     for (auto CaptureType : CaptureTypes) {
-      addLoweredTypeRef(CaptureType.mapTypeOutOfContext(), sig);
+      if (!CaptureType.hasTypeParameter())
+        CaptureType = CaptureType.mapTypeOutOfContext();
+      addLoweredTypeRef(CaptureType, sig);
     }
 
     // Add the pairs that make up the generic param -> metadata source map
