@@ -1,0 +1,252 @@
+// RUN: %target-sil-opt -enable-sil-verify-all -loop-unroll %s | %FileCheck %s
+
+// import _Differentiation
+//
+// func float_loop(_ x: Float) -> Float {
+//   var result: Float = 1.0
+//   for _ in 0 ..< 2 {
+//     result = result * x
+//   }
+//   return result
+// }
+//
+// @_silgen_name("test_gradient_float_loop")
+// func test_gradient_float_loop() -> Float {
+//   return gradient(at: 10, of: { float_loop($0) })
+// }
+
+import Builtin
+import Swift
+import SwiftShims
+
+import _Differentiation
+
+// differentiability witness for float_loop(_:)
+sil_differentiability_witness private [reverse] [parameters 0] [results 0] @$s4test10float_loopyS2fF : $@convention(thin) (Float) -> Float {
+  vjp: @$s4test10float_loopyS2fFTJrSpSr : $@convention(thin) (Float) -> (Float, @owned @callee_guaranteed (Float) -> Float)
+}
+
+enum _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0 {
+  case bb2(Builtin.RawPointer)
+  case bb0(())
+}
+
+enum _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0 {
+  case bb1(Builtin.RawPointer)
+}
+
+enum _AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0 {
+  case bb1(Builtin.RawPointer)
+}
+
+// float_loop(_:)
+// The original function is completely unrolled and optimized
+sil hidden @$s4test10float_loopyS2fF : $@convention(thin) (Float) -> Float {
+bb0(%0 : $Float):
+  %2 = float_literal $Builtin.FPIEEE32, 0x3F800000
+  %4 = struct_extract %0 : $Float, #Float._value
+  %5 = builtin "fmul_FPIEEE32"(%2 : $Builtin.FPIEEE32, %4 : $Builtin.FPIEEE32) : $Builtin.FPIEEE32
+  %7 = builtin "fmul_FPIEEE32"(%5 : $Builtin.FPIEEE32, %4 : $Builtin.FPIEEE32) : $Builtin.FPIEEE32
+  %9 = struct $Float (%7 : $Builtin.FPIEEE32)
+  return %9 : $Float
+}
+
+// reverse-mode derivative of float_loop(_:)
+//
+// The pullback was generated before most of the optimization on the original
+// function, therefore it has an additional context to track which BBs were
+// executed, and store derivatives for them.
+//
+// It used to be a loop, but just like in the original, it is unrolled here, but
+// the context remains as a linear sequence.
+sil private @$s4test10float_loopyS2fFTJrSpSr : $@convention(thin) (Float) -> (Float, @owned @callee_guaranteed (Float) -> Float) {
+bb0(%0 : $Float):
+  %1 = metatype $@thick (_AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0).Type
+  %2 = builtin "autoDiffCreateLinearMapContextWithType"(%1 : $@thick (_AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0).Type) : $Builtin.NativeObject
+  %4 = float_literal $Builtin.FPIEEE32, 0x3F800000
+  %6 = tuple ()
+  %7 = enum $_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0, #_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0.bb0!enumelt, %6 : $()
+  %8 = metatype $@thick (_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0).Type
+  %9 = struct_extract %0 : $Float, #Float._value
+  // function_ref closure #1 in static Float._vjpMultiply(lhs:rhs:)
+  %10 = function_ref @$sSf16_DifferentiationE12_vjpMultiply3lhs3rhsSf5value_Sf_SftSfc8pullbacktSf_SftFZSf_SftSfcfU_ : $@convention(thin) (Float, Float, Float) -> (Float, Float)
+  %11 = metatype $@thick (predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, (Float) -> (Float, Float)).Type
+  %12 = tuple $(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0) (%7)
+  %13 = builtin "autoDiffAllocateSubcontextWithType"(%2 : $Builtin.NativeObject, %8 : $@thick (_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0).Type) : $Builtin.RawPointer
+  %14 = pointer_to_address %13 : $Builtin.RawPointer to [strict] $*(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0)
+  store %12 to %14 : $*(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0)
+  %16 = enum $_AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, #_AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0.bb1!enumelt, %13 : $Builtin.RawPointer
+  %17 = struct $Float (%4 : $Builtin.FPIEEE32)
+  %18 = builtin "fmul_FPIEEE32"(%4 : $Builtin.FPIEEE32, %9 : $Builtin.FPIEEE32) : $Builtin.FPIEEE32
+  %19 = partial_apply [callee_guaranteed] %10(%0, %17) : $@convention(thin) (Float, Float, Float) -> (Float, Float)
+  %21 = tuple $(predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, @callee_guaranteed (Float) -> (Float, Float)) (%16, %19)
+  %22 = builtin "autoDiffAllocateSubcontextWithType"(%2 : $Builtin.NativeObject, %11 : $@thick (predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, (Float) -> (Float, Float)).Type) : $Builtin.RawPointer
+  %23 = pointer_to_address %22 : $Builtin.RawPointer to [strict] $*(predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, @callee_guaranteed (Float) -> (Float, Float))
+  store %21 to %23 : $*(predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, @callee_guaranteed (Float) -> (Float, Float))
+  %25 = enum $_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0, #_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0.bb2!enumelt, %22 : $Builtin.RawPointer
+  %26 = tuple $(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0) (%25)
+  %27 = builtin "autoDiffAllocateSubcontextWithType"(%2 : $Builtin.NativeObject, %8 : $@thick (_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0).Type) : $Builtin.RawPointer
+  %28 = pointer_to_address %27 : $Builtin.RawPointer to [strict] $*(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0)
+  store %26 to %28 : $*(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0)
+  %30 = enum $_AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, #_AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0.bb1!enumelt, %27 : $Builtin.RawPointer
+  %31 = struct $Float (%18 : $Builtin.FPIEEE32)
+  %32 = builtin "fmul_FPIEEE32"(%18 : $Builtin.FPIEEE32, %9 : $Builtin.FPIEEE32) : $Builtin.FPIEEE32
+  %33 = partial_apply [callee_guaranteed] %10(%0, %31) : $@convention(thin) (Float, Float, Float) -> (Float, Float)
+  %35 = tuple $(predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, @callee_guaranteed (Float) -> (Float, Float)) (%30, %33)
+  %36 = builtin "autoDiffAllocateSubcontextWithType"(%2 : $Builtin.NativeObject, %11 : $@thick (predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, (Float) -> (Float, Float)).Type) : $Builtin.RawPointer
+  %37 = pointer_to_address %36 : $Builtin.RawPointer to [strict] $*(predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, @callee_guaranteed (Float) -> (Float, Float))
+  store %35 to %37 : $*(predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, @callee_guaranteed (Float) -> (Float, Float))
+  %39 = enum $_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0, #_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0.bb2!enumelt, %36 : $Builtin.RawPointer
+  %40 = tuple $(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0) (%39)
+  %41 = metatype $@thick (_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0).Type
+  %42 = builtin "autoDiffAllocateSubcontextWithType"(%2 : $Builtin.NativeObject, %41 : $@thick (_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0).Type) : $Builtin.RawPointer
+  %43 = pointer_to_address %42 : $Builtin.RawPointer to [strict] $*(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0)
+  store %40 to %43 : $*(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0)
+  %45 = enum $_AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0, #_AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0.bb1!enumelt, %42 : $Builtin.RawPointer
+  %46 = struct $Float (%32 : $Builtin.FPIEEE32)
+  // function_ref pullback of float_loop(_:)
+  %47 = function_ref @$s4test10float_loopyS2fFTJpSpSr : $@convention(thin) (Float, @guaranteed Builtin.NativeObject) -> Float
+  %48 = tuple $(predecessor: _AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0) (%45)
+  %49 = builtin "autoDiffProjectTopLevelSubcontext"(%2 : $Builtin.NativeObject) : $Builtin.RawPointer
+  %50 = pointer_to_address %49 : $Builtin.RawPointer to [strict] $*(predecessor: _AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0)
+  store %48 to %50 : $*(predecessor: _AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0)
+  %52 = partial_apply [callee_guaranteed] %47(%2) : $@convention(thin) (Float, @guaranteed Builtin.NativeObject) -> Float
+  %53 = tuple (%46 : $Float, %52 : $@callee_guaranteed (Float) -> Float)
+  return %53 : $(Float, @callee_guaranteed (Float) -> Float)
+}
+
+// pullback of float_loop(_:)
+//
+// The pullback function is supposed to traverse the context populated by the
+// derivative. We can determine unroll factor for this loop, if we follow the
+// corresponding sequence in the derivative (backwards, for VJP/Pullback case).
+sil private @$s4test10float_loopyS2fFTJpSpSr : $@convention(thin) (Float, @guaranteed Builtin.NativeObject) -> Float {
+// CHECK-LABEL: sil private @$s4test10float_loopyS2fFTJpSpSr
+// CHECK-LABEL: bb0({{.*}}:
+bb0(%0 : $Float, %1 : $Builtin.NativeObject):
+  %2 = integer_literal $Builtin.Int64, 0
+  %3 = builtin "sitofp_Int64_FPIEEE32"(%2 : $Builtin.Int64) : $Builtin.FPIEEE32
+
+  // CHECK: %[[ROOT_CTX:.*]] = builtin "autoDiffProjectTopLevelSubcontext"
+  // CHECK: %[[ROOT_CTX_ADDR:.*]] = pointer_to_address %[[ROOT_CTX]]
+  // CHECK: %[[ROOT_CTX_ENUM_ADDR:.*]] = tuple_element_addr %[[ROOT_CTX_ADDR]] : $*({{.*}}), 0
+  // CHECK: %[[ROOT_CTX_ENUM:.*]] = load %[[ROOT_CTX_ENUM_ADDR]]
+  %4 = builtin "autoDiffProjectTopLevelSubcontext"(%1 : $Builtin.NativeObject) : $Builtin.RawPointer
+  %5 = pointer_to_address %4 : $Builtin.RawPointer to [strict] $*(predecessor: _AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0)
+  %6 = tuple_element_addr %5 : $*(predecessor: _AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0), 0
+  %7 = load %6 : $*_AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0
+
+  %9 = struct_extract %0 : $Float, #Float._value
+  %10 = builtin "fadd_FPIEEE32"(%3 : $Builtin.FPIEEE32, %9 : $Builtin.FPIEEE32) : $Builtin.FPIEEE32
+  %12 = struct $Float (%3 : $Builtin.FPIEEE32)
+
+  // CHECK: %[[UNCHECKED_DATA:.*]] = unchecked_enum_data %[[ROOT_CTX_ENUM]]
+  // CHECK: %[[UNCHECKED_DATA_ADDR:.*]] = pointer_to_address %[[UNCHECKED_DATA]]
+  // CHECK: %[[NEXT_TUPLE:.*]] = load %[[UNCHECKED_DATA_ADDR]]
+  %14 = unchecked_enum_data %7 : $_AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0, #_AD__$s4test10float_loopyS2fF_bb3__Pred__src_0_wrt_0.bb1!enumelt
+  %15 = pointer_to_address %14 : $Builtin.RawPointer to [strict] $*(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0)
+  %16 = load %15 : $*(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0)
+  // CHECK: br bb1(%{{.*}} : $Float, %[[NEXT_TUPLE]]
+  br bb1(%12 : $Float, %16 : $(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0), %10 : $Builtin.FPIEEE32)
+
+bb1(%18 : $Float, %19 : $(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0), %20 : $Builtin.FPIEEE32):
+  %21 = tuple_extract %19 : $(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0), 0
+  switch_enum %21 : $_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0, case #_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0.bb2!enumelt: bb2, case #_AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0.bb0!enumelt: bb3
+
+// The loop is unrolled by 2 with early exit branches. These branches will be
+// eliminated in SimplifyCFG.
+//
+// CHECK: bb1(%[[BB1_VAL_ARG:.*]] : $Float, %[[NEXT_TUPLE:.*]] : $({{.*}}):
+// CHECK:   %[[NEXT_ENUM:.*]] = tuple_extract %[[NEXT_TUPLE]] : $({{.*}}), 0
+// CHECK:   switch_enum %[[NEXT_ENUM]] {{.*}}, case {{.*}}.bb2!enumelt: bb4, case {{.*}}.bb0!enumelt: bb2
+
+// CHECK: bb2(%[[NEXT_TUPLE:.*]] : $()):
+// CHECK:   br bb3(%[[NEXT_TUPLE]] : $(), %[[BB1_VAL_ARG]] : $Float)
+
+// CHECK: bb3(%[[NEXT_TUPLE:.*]] : $(), %[[BB3_VAL_ARG:.*]] : $Float):
+// CHECK:   br bb11(%[[NEXT_TUPLE]] : $(), %[[BB3_VAL_ARG]] : $Float)
+
+// CHECK: bb4(%[[CTX:.*]] : $Builtin.RawPointer):
+// CHECK:   %[[CTX_ADDR:.*]] = pointer_to_address %[[CTX]]
+// CHECK:   %[[ENUM_ADDR:.*]] = tuple_element_addr %[[CTX_ADDR]] : $*({{.*}}), 0
+// CHECK:   %[[ENUM:.*]] = load %[[ENUM_ADDR]]
+// CHECK:   %[[VJP_ADDR:.*]] = tuple_element_addr %[[CTX_ADDR]] : $*({{.*}}), 1
+// CHECK:   %[[VJP:.*]] = load %[[VJP_ADDR]] : $*@{{.*}}
+// CHECK:   apply %[[VJP]]({{.*}})
+// CHECK:   %[[UNCHECKED_DATA:.*]] = unchecked_enum_data %[[ENUM]]
+// CHECK:   %[[UNCHECKED_DATA_ADDR:.*]] = pointer_to_address %[[UNCHECKED_DATA]]
+// CHECK:   %[[NEXT_TUPLE:.*]] = load %[[UNCHECKED_DATA_ADDR]]
+// CHECK:   br bb8(%{{.*}} : $Float, %[[NEXT_TUPLE]]
+
+// CHECK: bb5(%[[BB5_VAL_ARG:.*]] : $Float, %[[NEXT_TUPLE:.*]] : $({{.*}}), %{{.*}} : $Builtin.FPIEEE32):
+// CHECK:   %[[NEXT_ENUM:.*]] = tuple_extract %[[NEXT_TUPLE]] : $({{.*}}), 0
+// CHECK:   %[[UNCHECKED_DATA:.*]] = unchecked_enum_data %[[NEXT_ENUM]] : {{.*}}.bb0!enumelt
+// CHECK:   br bb7(%[[UNCHECKED_DATA]] : $())
+
+// CHECK: bb7(%[[BB7_ARG:.*]] : $()):
+// CHECK:   br bb3(%[[BB7_ARG]] : $(), %[[BB5_VAL_ARG]] : $Float)
+
+// CHECK: bb8(%[[BB8_VAL_ARG:.*]] : $Float, %[[NEXT_TUPLE:.*]] : $({{.*}}), %{{.*}} : $Builtin.FPIEEE32):
+// CHECK:   %[[NEXT_ENUM:.*]] = tuple_extract %[[NEXT_TUPLE]] : $({{.*}}), 0
+// CHECK:   switch_enum %[[NEXT_ENUM]] {{.*}}, case {{.*}}.bb2!enumelt: bb9, case {{.*}}.bb0!enumelt: bb10
+//
+// CHECK: bb9(%[[CTX:.*]] : $Builtin.RawPointer):
+// CHECK:   %[[CTX_ADDR:.*]] = pointer_to_address %[[CTX]]
+// CHECK:   %[[ENUM_ADDR:.*]] = tuple_element_addr %[[CTX_ADDR]] : $*({{.*}}), 0
+// CHECK:   %[[ENUM:.*]] = load %[[ENUM_ADDR]]
+// CHECK:   %[[VJP_ADDR:.*]] = tuple_element_addr %[[CTX_ADDR]] : $*({{.*}}), 1
+// CHECK:   %[[VJP:.*]] = load %[[VJP_ADDR]] : $*@{{.*}}
+// CHECK:   apply %[[VJP]]({{.*}})
+// CHECK:   %[[UNCHECKED_DATA:.*]] = unchecked_enum_data %[[ENUM]]
+// CHECK:   %[[UNCHECKED_DATA_ADDR:.*]] = pointer_to_address %[[UNCHECKED_DATA]]
+// CHECK:   %[[NEXT_TUPLE:.*]] = load %[[UNCHECKED_DATA_ADDR]]
+// CHECK:   br bb5(%{{.*}} : $Float, %[[NEXT_TUPLE]]
+
+// CHECK: bb10(%[[NEXT_TUPLE:.*]] : $()):
+// CHECK:  br bb11(%[[NEXT_TUPLE]] : $(), %[[BB8_VAL_ARG]] : $Float)
+
+// CHECK: bb11(%{{.*}} : $(), %[[BB11_VAL_ARG:.*]] : $Float):
+// CHECK:  return %[[BB11_VAL_ARG]] : $Float
+
+bb2(%27 : $Builtin.RawPointer):
+  %28 = pointer_to_address %27 : $Builtin.RawPointer to [strict] $*(predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, @callee_guaranteed (Float) -> (Float, Float))
+  %29 = tuple_element_addr %28 : $*(predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, @callee_guaranteed (Float) -> (Float, Float)), 0
+  %30 = load %29 : $*_AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0
+  %31 = tuple_element_addr %28 : $*(predecessor: _AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, @callee_guaranteed (Float) -> (Float, Float)), 1
+  %32 = load %31 : $*@callee_guaranteed (Float) -> (Float, Float)
+  %33 = builtin "fadd_FPIEEE32"(%20 : $Builtin.FPIEEE32, %3 : $Builtin.FPIEEE32) : $Builtin.FPIEEE32
+  %34 = struct $Float (%33 : $Builtin.FPIEEE32)
+  strong_retain %32 : $@callee_guaranteed (Float) -> (Float, Float)
+  %36 = apply %32(%34) : $@callee_guaranteed (Float) -> (Float, Float)
+  strong_release %32 : $@callee_guaranteed (Float) -> (Float, Float)
+  %38 = tuple_extract %36 : $(Float, Float), 0
+  %39 = tuple_extract %36 : $(Float, Float), 1
+  %40 = struct_extract %38 : $Float, #Float._value
+  %41 = builtin "fadd_FPIEEE32"(%40 : $Builtin.FPIEEE32, %3 : $Builtin.FPIEEE32) : $Builtin.FPIEEE32
+  %43 = struct_extract %39 : $Float, #Float._value
+  %44 = struct_extract %18 : $Float, #Float._value
+  %45 = builtin "fadd_FPIEEE32"(%43 : $Builtin.FPIEEE32, %44 : $Builtin.FPIEEE32) : $Builtin.FPIEEE32
+  %46 = struct $Float (%45 : $Builtin.FPIEEE32)
+  %47 = builtin "fadd_FPIEEE32"(%3 : $Builtin.FPIEEE32, %41 : $Builtin.FPIEEE32) : $Builtin.FPIEEE32
+  %51 = unchecked_enum_data %30 : $_AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0, #_AD__$s4test10float_loopyS2fF_bb2__Pred__src_0_wrt_0.bb1!enumelt
+  %52 = pointer_to_address %51 : $Builtin.RawPointer to [strict] $*(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0)
+  %53 = load %52 : $*(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0)
+  br bb1(%46 : $Float, %53 : $(predecessor: _AD__$s4test10float_loopyS2fF_bb1__Pred__src_0_wrt_0), %47 : $Builtin.FPIEEE32)
+
+bb3(%55 : $()):
+  return %18 : $Float
+}
+
+// closure #1 in static Float._vjpMultiply(lhs:rhs:)
+sil shared @$sSf16_DifferentiationE12_vjpMultiply3lhs3rhsSf5value_Sf_SftSfc8pullbacktSf_SftFZSf_SftSfcfU_ : $@convention(thin) (Float, Float, Float) -> (Float, Float) {
+bb0(%0 : $Float, %1 : @closureCapture $Float, %2 : @closureCapture $Float):
+  %3 = struct_extract %1 : $Float, #Float._value
+  %4 = struct_extract %0 : $Float, #Float._value
+  %5 = builtin "fmul_FPIEEE32"(%3 : $Builtin.FPIEEE32, %4 : $Builtin.FPIEEE32) : $Builtin.FPIEEE32
+  %6 = struct $Float (%5 : $Builtin.FPIEEE32)
+  %7 = struct_extract %2 : $Float, #Float._value
+  %8 = builtin "fmul_FPIEEE32"(%7 : $Builtin.FPIEEE32, %4 : $Builtin.FPIEEE32) : $Builtin.FPIEEE32
+  %9 = struct $Float (%8 : $Builtin.FPIEEE32)
+  %10 = tuple (%6 : $Float, %9 : $Float)
+  return %10 : $(Float, Float)
+}

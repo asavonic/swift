@@ -47,5 +47,6 @@ SIL_ANALYSIS(TypeExpansion)
 SIL_ANALYSIS(PassManagerVerifier)
 SIL_ANALYSIS(DeadEndBlocks)
 SIL_ANALYSIS(Region)
+SIL_ANALYSIS(AutoDiffBlockTracing)
 
 #undef SIL_ANALYSIS

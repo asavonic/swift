@@ -16,7 +16,9 @@
 
 #include "swift/SIL/PatternMatch.h"
 #include "swift/SIL/SILCloner.h"
+#include "swift/SILOptimizer/Analysis/AutoDiffBlockTracingAnalysis.h"
 #include "swift/SILOptimizer/Analysis/LoopAnalysis.h"
+#include "swift/SILOptimizer/Differentiation/Common.h"
 #include "swift/SILOptimizer/PassManager/Passes.h"
 #include "swift/SILOptimizer/PassManager/Transforms.h"
 #include "swift/SILOptimizer/Utils/BasicBlockOptUtils.h"
@@ -31,6 +33,25 @@ using namespace swift::PatternMatch;
 using llvm::DenseMap;
 using llvm::MapVector;
 
+STATISTIC(NumAutoDiffPullbacks,
+          "Number of AutoDiff pullback functions considered for unrolling");
+STATISTIC(NumAutoDiffPullbacksMissed, "Number of AutoDiff unrollable pullback "
+                                      "functions missed by the analysis");
+STATISTIC(NumAutoDiffPullbacksMissedCost,
+          "Number of AutoDiff unrollable pullback functions rejected by the "
+          "heuristic");
+STATISTIC(NumAutoDiffPullbacksFoundTripCount,
+          "Number of AutoDiff pullback with known trip count");
+STATISTIC(NumAutoDiffPullbacksUsedUnrollBonus,
+          "Number of AutoDiff pullback functions that used the unroll bonus");
+
+llvm::cl::opt<int> SILAutoDiffUnrollThreshold(
+    "sil-unroll-autodiff-threshold", llvm::cl::init(-1),
+    llvm::cl::desc("Loop unroll threshold for AutoDiff pullback functions."));
+
+static llvm::cl::opt<bool>
+    AutoDiffEnableUnroll("sil-autodiff-enable-unroll", llvm::cl::init(true),
+                         llvm::cl::desc("Enable AutoDiff LoopUnroll pass."));
 
 namespace {
 
@@ -60,7 +81,7 @@ protected:
   // SILCloner CRTP override.
   SILValue getMappedValue(SILValue V) {
     if (auto *BB = V->getParentBlock()) {
-      if (!Loop->contains(BB))
+      if (!BBMap.contains(BB))
         return V;
     }
     return SILCloner<LoopCloner>::getMappedValue(V);
@@ -105,13 +126,134 @@ void LoopCloner::cloneLoop() {
                        /*insertAfter*/Loop->getLoopLatch());
 }
 
+template <typename I1, typename I2>
+static bool compareBlockSeq(I1 Begin, I1 End, I2 &It, I2 ItEnd) {
+  for (const AutoDiffBlockContext *BlockCtx : llvm::make_range(Begin, End)) {
+    if (It == ItEnd) {
+      LLVM_DEBUG(llvm::dbgs() << "AutoDiff BTA analysis miss: LoopUnroll: enum "
+                                 "sequence stopped early:\n";
+                 BlockCtx->print(llvm::dbgs()););
+      return false;
+    }
+
+    EnumElementDecl *Enum = BlockCtx->getEnumElement();
+    EnumElementDecl *EnumIt = It->getEnumElement();
+    if (Enum && EnumIt && Enum != EnumIt) {
+      LLVM_DEBUG(llvm::dbgs() << "AutoDiff BTA analysis miss: LoopUnroll: enum "
+                                 "sequence does not match:\n"
+                              << Enum << EnumIt;
+                 BlockCtx->print(llvm::dbgs()); It->print(llvm::dbgs()););
+      return false;
+    }
+    ++It;
+  }
+  return true;
+}
+
+static llvm::Optional<uint64_t>
+getMaxLoopTripCountForUnrolledVJP(SILLoop *Loop, SILBasicBlock *Preheader,
+                                  SILBasicBlock *Header, SILBasicBlock *Latch,
+                                  AutoDiffFunctionContext *CtxPB,
+                                  AutoDiffFunctionContext *CtxVJP) {
+
+  // For now, only support loops with a header and a simple one-block body.
+  if (Loop->getNumBlocks() != 2)
+    return llvm::None;
+
+  // Assume that exit block does not continue the block tracing context.
+  SmallVector<const AutoDiffBlockContext *, 8> PreheaderCtx;
+  SmallVector<const AutoDiffBlockContext *, 8> LoopCtx;
+
+  for (const AutoDiffBlockContext &BlockCtx : CtxPB->Blocks) {
+    SILBasicBlock *BB = BlockCtx.getBasicBlock();
+    if (BB == Preheader) {
+      PreheaderCtx.push_back(&BlockCtx);
+      continue;
+    }
+
+    if (Loop->contains(BB)) {
+      LoopCtx.push_back(&BlockCtx);
+      continue;
+    }
+
+    return llvm::None; // FIXME: report miss
+  }
+
+  // VJP populates a linked list, and the Pullback reads it in reverse order.
+  auto UnrollSeqI = CtxVJP->Blocks.rbegin();
+  auto UnrollSeqE = CtxVJP->Blocks.rend();
+
+  // First traverse the preheader. It is outside of the loop, so it doesn't
+  // increment the trip count.
+  if (!compareBlockSeq(PreheaderCtx.begin(), PreheaderCtx.end(), UnrollSeqI,
+                       UnrollSeqE))
+    return llvm::None;
+
+  int UnrollFactor = 0;
+  while (UnrollSeqI != UnrollSeqE) {
+    if (!compareBlockSeq(LoopCtx.begin(), LoopCtx.end(), UnrollSeqI,
+                         UnrollSeqE))
+      return llvm::None;
+    ++UnrollFactor;
+  }
+
+  // // The body will be copied MaxTripCount-1 times in tryToUnrollLoop, so add
+  // 1
+  // // to the actual trip count.
+  return UnrollFactor + 1;
+}
+
+static llvm::Optional<uint64_t>
+getMaxLoopTripCountPullback(SILLoop *Loop, SILBasicBlock *Preheader,
+                            SILBasicBlock *Header, SILBasicBlock *Latch,
+                            AutoDiffBlockTracingAnalysis *BTA) {
+
+  SILFunction *F = Preheader->getFunction();
+  if (F->getEntryBlock() != Preheader)
+    return llvm::None;
+
+  AutoDiffFunctionContext *CtxPB = BTA->get(F);
+  if (!CtxPB->isValid() || !CtxPB->Derivative)
+    return llvm::None;
+
+  AutoDiffFunctionContext *CtxVJP = BTA->get(CtxPB->Derivative);
+
+  if (!CtxVJP->isLinear())
+    return llvm::None;
+
+  ++NumAutoDiffPullbacks;
+
+  if (llvm::Optional<uint64_t> TripCount = getMaxLoopTripCountForUnrolledVJP(
+          Loop, Preheader, Header, Latch, CtxPB, CtxVJP)) {
+    LLVM_DEBUG(llvm::dbgs() << "AutoDiff: pullback loop unroll factor: "
+                            << TripCount.value() << "\n");
+    ++NumAutoDiffPullbacksFoundTripCount;
+    return TripCount;
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "AutoDiff: pullback is not unrolled: "
+                             "failed to find loop trip count\n");
+  ++NumAutoDiffPullbacksMissed;
+
+  return llvm::None;
+}
+
+static llvm::Optional<uint64_t>
+getMaxLoopTripCountDifferentiation(SILLoop *Loop, SILBasicBlock *Preheader,
+                                   SILBasicBlock *Header, SILBasicBlock *Latch,
+                                   AutoDiffBlockTracingAnalysis *BTA) {
+  if (!AutoDiffEnableUnroll)
+    return llvm::None;
+  return getMaxLoopTripCountPullback(Loop, Preheader, Header, Latch, BTA);
+}
+
 /// Determine the number of iterations the loop is at most executed. The loop
 /// might contain early exits so this is the maximum if no early exits are
 /// taken.
-static llvm::Optional<uint64_t> getMaxLoopTripCount(SILLoop *Loop,
-                                                    SILBasicBlock *Preheader,
-                                                    SILBasicBlock *Header,
-                                                    SILBasicBlock *Latch) {
+static llvm::Optional<uint64_t>
+getMaxLoopTripCount(SILLoop *Loop, SILBasicBlock *Preheader,
+                    SILBasicBlock *Header, SILBasicBlock *Latch,
+                    AutoDiffBlockTracingAnalysis *BTA) {
 
   // Skip a split backedge.
   SILBasicBlock *OrigLatch = Latch;
@@ -123,8 +265,10 @@ static llvm::Optional<uint64_t> getMaxLoopTripCount(SILLoop *Loop,
 
  // Get the loop exit condition.
   auto *CondBr = dyn_cast<CondBranchInst>(Latch->getTerminator());
-  if (!CondBr)
-    return llvm::None;
+  if (!CondBr) {
+    return getMaxLoopTripCountDifferentiation(Loop, Preheader, Header, Latch,
+                                              BTA);
+  }
 
   // Match an add 1 recurrence.
 
@@ -205,10 +349,17 @@ static llvm::Optional<uint64_t> getMaxLoopTripCount(SILLoop *Loop,
   return Dist.getZExtValue() + Adjust;
 }
 
+static bool isAutoDiffPullbackLoop(SILLoop *Loop,
+                                   AutoDiffBlockTracingAnalysis *BTA) {
+  AutoDiffFunctionContext *Ctx = BTA->get(Loop->getFunction());
+  return Ctx->isValid() && Ctx->Derivative;
+}
+
 /// Check whether we can duplicate the instructions in the loop and use a
 /// heuristic that looks at the trip count and the cost of the instructions in
 /// the loop to determine whether we should unroll this loop.
-static bool canAndShouldUnrollLoop(SILLoop *Loop, uint64_t TripCount) {
+static bool canAndShouldUnrollLoop(SILLoop *Loop, uint64_t TripCount,
+                                   AutoDiffBlockTracingAnalysis *BTA) {
   assert(Loop->getSubLoops().empty() && "Expect innermost loops");
   if (TripCount > 32)
     return false;
@@ -220,8 +371,25 @@ static bool canAndShouldUnrollLoop(SILLoop *Loop, uint64_t TripCount) {
   // inside a loop.
   const uint64_t InsnsPerBB = 4;
   // Use command-line threshold for unrolling.
-  const uint64_t SILLoopUnrollThreshold = Loop->getBlocks().empty() ? 0 : 
-    (Loop->getBlocks())[0]->getParent()->getModule().getOptions().UnrollThreshold;
+  const uint64_t SILLoopUnrollThreshold = Loop->getBlocks().empty()
+                                              ? 0
+                                              : (Loop->getBlocks())[0]
+                                                    ->getParent()
+                                                    ->getModule()
+                                                    .getOptions()
+                                                    .UnrollThreshold;
+
+  uint64_t Threshold = SILLoopUnrollThreshold;
+  bool FoundAutoDiffLoop = isAutoDiffPullbackLoop(Loop, BTA);
+  if (FoundAutoDiffLoop) {
+    if (SILAutoDiffUnrollThreshold == -1) {
+      Threshold = SILLoopUnrollThreshold * 5;
+    } else if (SILAutoDiffUnrollThreshold > 0) {
+      Threshold = SILAutoDiffUnrollThreshold;
+    }
+  }
+  bool UsedAutoDiffUnrollBonus = false;
+
   for (auto *BB : Loop->getBlocks()) {
     for (auto &Inst : *BB) {
       if (!canDuplicateLoopInstruction(Loop, &Inst))
@@ -236,10 +404,23 @@ static bool canAndShouldUnrollLoop(SILLoop *Loop, uint64_t TripCount) {
           Cost += Callee->size() * InsnsPerBB;
         }
       }
-      if (Cost * TripCount > SILLoopUnrollThreshold)
+      if (Cost * TripCount > Threshold) {
+        if (FoundAutoDiffLoop) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "AutoDiff: pullback is not unrolled: c=" << Cost
+                     << ", tc=" << TripCount << ", tr=" << Threshold << "\n");
+          ++NumAutoDiffPullbacksMissedCost;
+        }
         return false;
+      }
+      if (Cost * TripCount > SILLoopUnrollThreshold)
+        UsedAutoDiffUnrollBonus = true;
   }
   }
+
+  if (UsedAutoDiffUnrollBonus)
+    ++NumAutoDiffPullbacksUsedUnrollBonus;
+
   return true;
 }
 
@@ -274,6 +455,26 @@ static void redirectTerminator(SILBasicBlock *Latch, unsigned CurLoopIter,
     // On the last iteration change the conditional exit to an unconditional
     // one.
     if (CurLoopIter == LastLoopIter) {
+      if (auto *LastSwitch = dyn_cast<SwitchEnumInst>(
+              Latch->getSinglePredecessorBlock()->getTerminator())) {
+        // switch_enum is only supported for autodiff loop unrolling. We check
+        // that it has two values in the trip count calculation routine.
+        assert(LastSwitch->getNumCases() == 2 && !LastSwitch->hasDefault() &&
+               "unsupported switch_enum");
+        std::pair<EnumElementDecl *, SILBasicBlock *> NextCase =
+            LastSwitch->getCase(0);
+        if (NextCase.second == Latch)
+          NextCase = LastSwitch->getCase(1);
+        SILValue Enum = LastSwitch->getOperand();
+        SILValue Arg = SILBuilderWithScope(LastSwitch)
+                           .createUncheckedEnumData(LastSwitch->getLoc(), Enum,
+                                                    NextCase.first);
+        SILBuilderWithScope(LastSwitch)
+            .createBranch(LastSwitch->getLoc(), NextCase.second, {Arg});
+        LastSwitch->eraseFromParent();
+        return;
+      }
+
       auto *CondBr = cast<CondBranchInst>(
           Latch->getSinglePredecessorBlock()->getTerminator());
       if (CondBr->getTrueBB() != Latch)
@@ -385,7 +586,7 @@ updateSSA(SILModule &M, SILLoop *Loop,
 
 /// Try to fully unroll the loop if we can determine the trip count and the trip
 /// count is below a threshold.
-static bool tryToUnrollLoop(SILLoop *Loop) {
+static bool tryToUnrollLoop(SILLoop *Loop, AutoDiffBlockTracingAnalysis *BTA) {
   assert(Loop->getSubLoops().empty() && "Expecting innermost loops");
 
   LLVM_DEBUG(llvm::dbgs() << "Trying to unroll loop : \n" << *Loop);
@@ -401,13 +602,13 @@ static bool tryToUnrollLoop(SILLoop *Loop) {
   auto *Header = Loop->getHeader();
 
   llvm::Optional<uint64_t> MaxTripCount =
-      getMaxLoopTripCount(Loop, Preheader, Header, Latch);
+      getMaxLoopTripCount(Loop, Preheader, Header, Latch, BTA);
   if (!MaxTripCount) {
     LLVM_DEBUG(llvm::dbgs() << "Not unrolling, did not find trip count\n");
     return false;
   }
 
-  if (!canAndShouldUnrollLoop(Loop, MaxTripCount.value())) {
+  if (!canAndShouldUnrollLoop(Loop, MaxTripCount.value(), BTA)) {
     LLVM_DEBUG(llvm::dbgs() << "Not unrolling, exceeds cost threshold\n");
     return false;
   }
@@ -417,7 +618,8 @@ static bool tryToUnrollLoop(SILLoop *Loop) {
   SmallVector<SILBasicBlock *, 16> ExitingBlocks;
   Loop->getExitingBlocks(ExitingBlocks);
   for (auto &Exit : ExitingBlocks)
-    if (!isa<CondBranchInst>(Exit->getTerminator()))
+    if (!isa<CondBranchInst>(Exit->getTerminator()) &&
+        !isa<SwitchEnumInst>(Exit->getTerminator()))
       return false;
 
   LLVM_DEBUG(llvm::dbgs() << "Unrolling loop in "
@@ -512,9 +714,11 @@ class LoopUnrolling : public SILFunctionTransform {
       return;
     }
 
+    AutoDiffBlockTracingAnalysis *BTA =
+        PM->getAnalysis<AutoDiffBlockTracingAnalysis>();
     // Try to unroll innermost loops.
     for (auto *Loop : InnermostLoops)
-      Changed |= tryToUnrollLoop(Loop);
+      Changed |= tryToUnrollLoop(Loop, BTA);
 
     if (Changed) {
       invalidateAnalysis(SILAnalysis::InvalidationKind::FunctionBody);

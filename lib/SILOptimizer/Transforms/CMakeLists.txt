@@ -37,4 +37,5 @@ target_sources(swiftSILOptimizer PRIVATE
   StringOptimization.cpp
   TempLValueOpt.cpp
   TempRValueElimination.cpp
-  VTableSpecializer.cpp)
+  VTableSpecializer.cpp
+  AutoDiffPostUnroll.cpp)

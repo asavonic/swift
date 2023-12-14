@@ -16,6 +16,7 @@
 #include "swift/AST/SILOptions.h"
 #include "swift/SIL/SILFunction.h"
 #include "swift/SIL/SILModule.h"
+#include "swift/SILOptimizer/Analysis/AutoDiffBlockTracingAnalysis.h"
 #include "swift/SILOptimizer/Analysis/BasicCalleeAnalysis.h"
 #include "swift/SILOptimizer/Analysis/ClassHierarchyAnalysis.h"
 #include "swift/SILOptimizer/Analysis/DominanceAnalysis.h"
@@ -64,4 +65,8 @@ SILAnalysis *swift::createProtocolConformanceAnalysis(SILModule *M) {
 
 SILAnalysis *swift::createNonLocalAccessBlockAnalysis(SILModule *M) {
   return new NonLocalAccessBlockAnalysis();
+}
+
+SILAnalysis *swift::createAutoDiffBlockTracingAnalysis(SILModule *M) {
+  return new AutoDiffBlockTracingAnalysis();
 }

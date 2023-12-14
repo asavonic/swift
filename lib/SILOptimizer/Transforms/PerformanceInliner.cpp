@@ -31,6 +31,12 @@
 using namespace swift;
 
 STATISTIC(NumFunctionsInlined, "Number of functions inlined");
+STATISTIC(NumAutoDiffDerivatives,
+          "Number of AutoDiff functions considered for inlining");
+STATISTIC(NumAutoDiffDerivativesInlined,
+          "Number of AutoDiff functions inlined");
+STATISTIC(NumAutoDiffDerivativesUsedInlineBonus,
+          "Number of AutoDiff functions that used the inline bonus");
 
 llvm::cl::opt<bool> PrintShortestPathInfo(
     "print-shortest-path-info", llvm::cl::init(false),
@@ -68,6 +74,12 @@ llvm::cl::opt<bool> EnableVerifyAfterEachInlining(
     llvm::cl::desc(
         "Run sil verification after inlining each found callee apply "
         "site into a caller."));
+
+llvm::cl::opt<int> AutoDiffClosureBenefit(
+    "sil-inline-autodiff-closure-benefit", llvm::cl::init(10),
+    llvm::cl::desc(
+        "Give inline benefit to AutoDiff derivative functions for each"
+        "closure they capture in a pullback function."));
 
 //===----------------------------------------------------------------------===//
 //                           Printing Helpers
@@ -386,6 +398,54 @@ bool SILPerformanceInliner::isTupleWithAllocsOrPartialApplies(SILValue val) {
   return false;
 }
 
+int getAutoDiffDerivativeInlineBenefit(SILFunction *F) {
+  bool isVJP = false;
+  for (SILDifferentiabilityWitness &witness :
+       F->getModule().getDifferentiabilityWitnesses()) {
+    if (witness.isDeclaration())
+      continue;
+    if (F == witness.getVJP()) {
+      isVJP = true;
+      break;
+    }
+  }
+
+  if (!isVJP)
+    return 0;
+
+  PartialApplyInst *PartialApplyPB = nullptr;
+  for (SILBasicBlock &BB : *F) {
+    TermInst *Term = BB.getTerminator();
+    ReturnInst *Ret = dyn_cast<ReturnInst>(Term);
+    if (!Ret)
+      continue;
+
+    TupleInst *RetTuple = dyn_cast<TupleInst>(Ret->getOperand());
+    if (!RetTuple)
+      continue;
+
+    OperandValueArrayRef RetTupleElem = RetTuple->getElements();
+    if (RetTupleElem.empty())
+      continue;
+
+    PartialApplyPB = dyn_cast<PartialApplyInst>(RetTupleElem.back());
+    break;
+  }
+
+  if (!PartialApplyPB)
+    return 0;
+
+  OperandValueArrayRef Args = PartialApplyPB->getArguments();
+  int Benefit = 0;
+  for (SILValue Arg : Args) {
+    if (!isa<PartialApplyInst>(Arg))
+      continue;
+    Benefit += AutoDiffClosureBenefit;
+  }
+
+  return Benefit;
+}
+
 bool SILPerformanceInliner::isProfitableToInline(
     FullApplySite AI, Weight CallerWeight, ConstantTracker &callerTracker,
     int &NumCallerBlocks,
@@ -684,8 +744,29 @@ bool SILPerformanceInliner::isProfitableToInline(
       Benefit += 10;
   }
 
+  int ReceivedAutoDiffBenefit = 0;
+  SILInstruction *Def = constTracker.getDefInCaller(AI.getCallee());
+  if (Def && (isa<FunctionRefInst>(Def))) {
+    FunctionRefInst *Ref = cast<FunctionRefInst>(Def);
+    if (SILFunction *F = Ref->getReferencedFunction()) {
+      if (int DerivativeBenefit = getAutoDiffDerivativeInlineBenefit(F)) {
+        Benefit += DerivativeBenefit;
+        ReceivedAutoDiffBenefit += DerivativeBenefit;
+      }
+    }
+  }
+  if (ReceivedAutoDiffBenefit)
+    ++NumAutoDiffDerivatives;
+
   // This is the final inlining decision.
   if (CalleeCost > Benefit) {
+    if (ReceivedAutoDiffBenefit) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "AutoDiff: derivative with a closure is not inlined: "
+                 << "c=" << CalleeCost << ", b=" << Benefit
+                 << ", e=" << ReceivedAutoDiffBenefit << "\n");
+    }
+
     OptRemark::Emitter::emitOrDebug(DEBUG_TYPE, &ORE, [&]() {
       using namespace OptRemark;
       return RemarkMissed("Inline", *AI.getInstruction())
@@ -695,6 +776,12 @@ bool SILPerformanceInliner::isProfitableToInline(
     });
     return false;
   }
+
+  if (ReceivedAutoDiffBenefit)
+    ++NumAutoDiffDerivativesInlined;
+
+  if (CalleeCost > (Benefit - ReceivedAutoDiffBenefit))
+    ++NumAutoDiffDerivativesUsedInlineBonus;
 
   NumCallerBlocks += Callee->size();
 

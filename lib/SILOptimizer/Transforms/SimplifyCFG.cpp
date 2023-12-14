@@ -42,6 +42,7 @@
 #include "swift/SIL/SILUndef.h"
 #include "swift/SIL/TerminatorUtils.h"
 #include "swift/SIL/Test.h"
+#include "swift/SILOptimizer/Analysis/AutoDiffBlockTracingAnalysis.h"
 #include "swift/SILOptimizer/Analysis/DeadEndBlocksAnalysis.h"
 #include "swift/SILOptimizer/Analysis/DominanceAnalysis.h"
 #include "swift/SILOptimizer/Analysis/ProgramTerminationAnalysis.h"
@@ -78,6 +79,10 @@ llvm::cl::opt<bool> IsInfiniteJumpThreadingBudget(
     "sil-infinite-jump-threading-budget",
     llvm::cl::desc(
         "Use infinite budget for jump threading. Useful for testing purposes"));
+
+static llvm::cl::opt<bool>
+    AutoDiffEnableSimplify("sil-autodiff-enable-simplify", llvm::cl::init(true),
+                           llvm::cl::desc("Enable AutoDiff SimplifyCFG pass."));
 
 STATISTIC(NumBlocksDeleted, "Number of unreachable blocks removed");
 STATISTIC(NumBlocksMerged, "Number of blocks merged together");
@@ -3292,8 +3297,106 @@ static bool splitBBArguments(SILFunction &Fn) {
   return Changed;
 }
 
+static bool simplifyAutodiffPullback(SILFunction &PB,
+                                     AutoDiffBlockTracingAnalysis *BTA) {
+
+  if (!AutoDiffEnableSimplify)
+    return false;
+
+  AutoDiffFunctionContext *CtxPB = BTA->get(&PB);
+  if (!CtxPB->isValid() || !CtxPB->Derivative)
+    return false;
+
+  AutoDiffFunctionContext *CtxVJP = BTA->get(CtxPB->Derivative);
+  if (!CtxVJP->isValid() || !CtxVJP->isLinear())
+    return false;
+
+  auto UnrollSeqI = CtxVJP->Blocks.rbegin();
+  auto UnrollSeqE = CtxVJP->Blocks.rend();
+
+  llvm::DenseMap<SILBasicBlock *, SmallVector<const AutoDiffBlockContext *, 8>>
+      BBContexts;
+  llvm::DenseMap<SwitchEnumInst *, EnumElementDecl *> SwitchEnum;
+  for (const AutoDiffBlockContext &BlockCtx : CtxPB->Blocks) {
+    BBContexts[BlockCtx.getBasicBlock()].push_back(&BlockCtx);
+  }
+
+  SILBasicBlock *BB = PB.getEntryBlock();
+  llvm::SmallSet<SILBasicBlock *, 8> Visited;
+  while (true) {
+    if (!Visited.insert(BB).second)
+      return false; // detected a loop, wait until it is unrolled
+
+    if (UnrollSeqI == UnrollSeqE)
+      break;
+
+    auto BBCtxIt = BBContexts.find(BB);
+    if (BBCtxIt != BBContexts.end()) {
+      SmallVectorImpl<const AutoDiffBlockContext *> &Ctx = BBCtxIt->second;
+      for (const AutoDiffBlockContext *BlockCtx : Ctx) {
+        if (BlockCtx->Enum) {
+          if (SwitchEnumInst *Switch =
+                  BlockCtx->Enum->getSingleUserOfType<SwitchEnumInst>()) {
+
+            EnumInst *Enum = dyn_cast_or_null<EnumInst>(UnrollSeqI->Enum);
+            if (!Enum)
+              return false;
+
+            SwitchEnum[Switch] = Enum->getElement();
+          }
+        }
+        ++UnrollSeqI;
+      }
+    }
+
+    TermInst *Term = BB->getTerminator();
+    if (BranchInst *Br = dyn_cast<BranchInst>(Term)) {
+      BB = Br->getDestBB();
+      continue;
+    }
+
+    if (SwitchEnumInst *Switch = dyn_cast<SwitchEnumInst>(Term)) {
+      EnumElementDecl *NextEnum = SwitchEnum[Switch];
+      if (!NextEnum)
+        return false;
+      BB = Switch->getCaseDestination(NextEnum);
+      if (!BB)
+        return false; // TODO: report miss, this should not happen since we're
+                      // following from the beginning.
+      continue;
+    }
+
+    if (isa<ReturnInst>(Term)) {
+      // TODO: check that all subsequent enums are without derivatives
+      break;
+    }
+
+    // Unhandled terminator
+    return false;
+  }
+
+  for (auto SwitchEnumPair : SwitchEnum) {
+    SwitchEnumInst *Sw = nullptr;
+    EnumElementDecl *Enum = nullptr;
+    std::tie(Sw, Enum) = SwitchEnumPair;
+
+    SILBasicBlock *BB = Sw->getCaseDestination(Enum);
+    SILValue Op = Sw->getOperand();
+    SILValue Arg =
+        SILBuilderWithScope(Sw).createUncheckedEnumData(Sw->getLoc(), Op, Enum);
+    SILBuilderWithScope(Sw).createBranch(Sw->getLoc(), BB, {Arg});
+    Sw->eraseFromParent();
+  }
+
+  return !SwitchEnum.empty();
+}
+
 bool SimplifyCFG::run() {
   LLVM_DEBUG(llvm::dbgs() << "### Run SimplifyCFG on " << Fn.getName() << '\n');
+
+  AutoDiffBlockTracingAnalysis *BTA =
+      PM->getAnalysis<AutoDiffBlockTracingAnalysis>();
+  BTA->get(&Fn);
 
   // Disable some expensive optimizations if the function is huge.
   isVeryLargeFunction = (Fn.size() > 10000);
@@ -3366,6 +3469,11 @@ bool SimplifyCFG::run() {
 
   // Canonicalize switch_enum instructions.
   Changed |= canonicalizeSwitchEnums();
+
+  if (Changed)
+    BTA->invalidate(&Fn, SILAnalysis::InvalidationKind::FunctionBody);
+
+  Changed |= simplifyAutodiffPullback(Fn, BTA);
 
   return Changed;
 }

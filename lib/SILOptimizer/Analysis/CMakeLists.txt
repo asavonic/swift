@@ -5,6 +5,7 @@ target_sources(swiftSILOptimizer PRIVATE
   AliasAnalysis.cpp
   Analysis.cpp
   ArraySemantic.cpp
+  AutoDiffBlockTracingAnalysis.cpp
   BasicCalleeAnalysis.cpp
   CallerAnalysis.cpp
   ClassHierarchyAnalysis.cpp

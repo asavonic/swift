@@ -74,6 +74,10 @@ EnableLifetimeDependenceDiagnostics(
   "enable-lifetime-dependence-diagnostics", llvm::cl::init(false),
   llvm::cl::desc("Enable lifetime dependence diagnostics."));
 
+static llvm::cl::opt<bool> AutoDiffEnableLateOpt(
+    "sil-autodiff-enable-late-opt", llvm::cl::init(true),
+    llvm::cl::desc("Enable additional late optimization passes."));
+
 //===----------------------------------------------------------------------===//
 //                          Diagnostic Pass Pipeline
 //===----------------------------------------------------------------------===//
@@ -697,6 +701,7 @@ static void addHighLevelModulePipeline(SILPassPipelinePlan &P) {
   P.addStackPromotion();
 
   P.addLetPropertiesOpt();
+  P.addAutoDiffPostUnroll();
 }
 
 static void addMidLevelFunctionPipeline(SILPassPipelinePlan &P) {
@@ -806,6 +811,8 @@ static void addLateLoopOptPassPipeline(SILPassPipelinePlan &P) {
   // anymore after the last devirtualizer run.
   P.addLateDeadFunctionAndGlobalElimination();
 
+  P.addAutoDiffPostUnroll();
+
   // Perform the final lowering transformations.
   P.addCodeSinking();
   // Optimize access markers for better LICM: might merge accesses
@@ -848,6 +855,8 @@ static void addLateLoopOptPassPipeline(SILPassPipelinePlan &P) {
 // - have no reason to run before any other SIL optimizations.
 // - don't require IRGen information.
 static void addLastChanceOptPassPipeline(SILPassPipelinePlan &P) {
+  P.startPipeline("LastChanceOpt");
+
   // Optimize access markers for improved IRGen after all other optimizations.
   P.addOptimizeHopToExecutor();
   P.addAccessEnforcementReleaseSinking();
@@ -995,6 +1004,10 @@ SILPassPipelinePlan::getPerformancePassPipeline(const SILOptions &Options) {
   addLowLevelPassPipeline(P);
 
   addLateLoopOptPassPipeline(P);
+
+  if (AutoDiffEnableLateOpt) {
+    addMidLevelFunctionPipeline(P);
+  }
 
   addLastChanceOptPassPipeline(P);
 
