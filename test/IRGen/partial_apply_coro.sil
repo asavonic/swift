@@ -848,11 +848,11 @@ entry(%i : $*T, %io : $*T):
 // CHECK:   ret void
 // CHECK: }
 //
-sil @partial_apply_open_generic_capture : $@convention(thin) <T> (@inout T) -> @yield_once @callee_guaranteed  @substituted <T> (@in T) -> @yields T for <T> {
+sil @partial_apply_open_generic_capture : $@convention(thin) <T> (@inout T) -> @yield_once @callee_guaranteed  @substituted <T where T : Copyable, T : Escapable> (@in T) -> @yields T for <T> {
 entry(%a : $*T):
   %f = function_ref @generic_captured_and_open_param : $@yield_once @convention(thin) <U> (@in U, @inout U) -> (@yields U)
   %p = partial_apply [callee_guaranteed] %f<T>(%a) : $@yield_once @convention(thin) <U> (@in U, @inout U) -> (@yields U)
-  return %p : $@yield_once @callee_guaranteed @substituted <T> (@in T) -> @yields T for <T>
+  return %p : $@yield_once @callee_guaranteed @substituted <T where T : Copyable, T : Escapable> (@in T) -> @yields T for <T>
 }
 
 /*****************************************************************************/
