@@ -331,10 +331,10 @@ bb0(%0 : $Float):
   %coro = function_ref @yieldgen1 : $@yield_once @convention(thin) <T> (T) -> (@yields T)
   %pa = partial_apply [callee_guaranteed] %coro<Float>(%0) : $@yield_once @convention(thin) <T > (T) -> (@yields T)
 
-  (%float, %token) = begin_apply %pa() : $@yield_once @callee_guaranteed @substituted <T > () -> (@yields T) for <Float>
+  (%float, %token) = begin_apply %pa() : $@yield_once @callee_guaranteed @substituted <T where T : Copyable, T : Escapable> () -> (@yields T) for <Float>
 
   end_apply %token as $()
-  destroy_value %pa : $@yield_once @callee_guaranteed @substituted <T> () -> (@yields T) for <Float>
+  destroy_value %pa : $@yield_once @callee_guaranteed @substituted <T where T : Copyable, T : Escapable> () -> (@yields T) for <Float>
 
   %r = tuple ()
   return %r : $()
@@ -357,7 +357,7 @@ bb0(%0 : $Float):
 // CHECK:   ret ptr %[[RET_SEL]]
 // CHECK: }
 //
-sil @yieldgen2 : $@yield_once @convention(thin) <T : F> (T) -> (@yields T, T) {
+sil @yieldgen2 : $@yield_once @convention(thin) <T> (T) -> (@yields T, T) {
 bb0(%t : $T):
   yield (%t : $T), resume bb1, unwind bb2
 
@@ -437,13 +437,13 @@ bb2:
 //
 sil [ossa] @applygen2 : $(Float) -> () {
 bb0(%0 : $Float):
-  %coro = function_ref @yieldgen2 : $@yield_once @convention(thin) <T : F> (T) -> (@yields T, T)
-  %pa = partial_apply [callee_guaranteed] %coro<Float>(%0) : $@yield_once @convention(thin) <T : F> (T) -> (@yields T, T)
+  %coro = function_ref @yieldgen2 : $@yield_once @convention(thin) <T> (T) -> (@yields T, T)
+  %pa = partial_apply [callee_guaranteed] %coro<Float>(%0) : $@yield_once @convention(thin) <T> (T) -> (@yields T, T)
 
-  (%f1, %token) = begin_apply %pa() : $@yield_once @callee_guaranteed @substituted <T : F> () -> (@yields T, T) for <Float>
+  (%f1, %token) = begin_apply %pa() : $@yield_once @callee_guaranteed @substituted <T where T : Copyable, T : Escapable> () -> (@yields T, T) for <Float>
 
   %f2 = end_apply %token as $Float
-  destroy_value %pa : $@yield_once @callee_guaranteed @substituted <T : F> () -> (@yields T, T) for <Float>
+  destroy_value %pa : $@yield_once @callee_guaranteed @substituted <T where T : Copyable, T : Escapable> () -> (@yields T, T) for <Float>
 
   %r = tuple ()
   return %r : $()
