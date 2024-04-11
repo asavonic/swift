@@ -234,8 +234,6 @@ bb0(%0 : $Int, %1 : $Float):
 }
 
 // Coroutine with a generic yield and no results
-// FIXME: crash when we replace <T : F> with just <T>  - occurs in existing code, skip for now
-//
 // CHECK: define {{.*}} { ptr, ptr } @yieldgen1(ptr noalias dereferenceable(32) %{{.*}}, ptr %[[ARG1:.*]], ptr %[[ARG2:.*]])
 // CHECK: entry:
 // CHECK:   %[[SPILL_ARG2:.*]] = alloca ptr, align 8
@@ -250,9 +248,7 @@ bb0(%0 : $Int, %1 : $Float):
 // CHECK:   ret void
 // CHECK: }
 //
-class F {}
-sil_vtable F {}
-sil @yieldgen1 : $@yield_once @convention(thin) <T : F> (T) -> (@yields T) {
+sil @yieldgen1 : $@yield_once @convention(thin) <T > (T) -> (@yields T) {
 bb0(%t : $T):
   yield (%t : $T), resume bb1, unwind bb2
 
@@ -332,13 +328,13 @@ bb2:
 //
 sil [ossa] @applygen1 : $(Float) -> () {
 bb0(%0 : $Float):
-  %coro = function_ref @yieldgen1 : $@yield_once @convention(thin) <T : F> (T) -> (@yields T)
-  %pa = partial_apply [callee_guaranteed] %coro<Float>(%0) : $@yield_once @convention(thin) <T : F> (T) -> (@yields T)
+  %coro = function_ref @yieldgen1 : $@yield_once @convention(thin) <T> (T) -> (@yields T)
+  %pa = partial_apply [callee_guaranteed] %coro<Float>(%0) : $@yield_once @convention(thin) <T > (T) -> (@yields T)
 
-  (%float, %token) = begin_apply %pa() : $@yield_once @callee_guaranteed @substituted <T : F> () -> (@yields T) for <Float>
+  (%float, %token) = begin_apply %pa() : $@yield_once @callee_guaranteed @substituted <T > () -> (@yields T) for <Float>
 
   end_apply %token as $()
-  destroy_value %pa : $@yield_once @callee_guaranteed @substituted <T : F> () -> (@yields T) for <Float>
+  destroy_value %pa : $@yield_once @callee_guaranteed @substituted <T> () -> (@yields T) for <Float>
 
   %r = tuple ()
   return %r : $()
